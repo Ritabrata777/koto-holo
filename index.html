@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Koto Holo · share expenses, settle in UPI</title>
+  <meta name="description" content="Track shared expenses, split bills fairly, and settle up with UPI. Create a group and invite anyone with a link. No sign-up needed.">
+  <meta name="theme-color" content="#e3e5e7">
+  <meta name="color-scheme" content="light">
+  <link rel="canonical" href="https://kotoholo.vercel.app/">
+  <meta property="og:site_name" content="Koto Holo">
+  <meta property="og:url" content="https://kotoholo.vercel.app/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Koto Holo · share expenses, settle in UPI">
+  <meta property="og:description" content="Track shared expenses, see who owes what, and settle up with UPI. No sign-up needed.">
+  <meta property="og:image" content="https://kotoholo.vercel.app/assets/og.png?v=koto-holo-1">
+  <meta property="og:image:width" content="1732">
+  <meta property="og:image:height" content="908">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:alt" content="Koto Holo ? Share expenses. Settle in UPI.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Koto Holo ? Share expenses. Settle in UPI.">
+  <meta name="twitter:description" content="Track shared expenses, see who owes what, and settle up with UPI. No sign-up needed.">
+  <meta name="twitter:image" content="https://kotoholo.vercel.app/assets/og.png?v=koto-holo-1">
+  <meta name="twitter:image:alt" content="Koto Holo ? Share expenses. Settle in UPI.">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-180.png">
+  <link rel="preload" href="assets/fonts/plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/plex-mono-600.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/plex-mono-700.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="modulepreload" href="assets/js/app.js">
+  <link rel="stylesheet" href="assets/css/hisaab.css">
+</head>
+<body>
+<!--
+  THESIS: A trip's money as the thermal till receipt it already is: printed lines, dotted leaders, a barcode, and a teal stamp for the answer. Refuses the fintech dashboard of cards, charts and gradients.
+  OWN-WORLD: Warm-grey thermal paper (#f0eeec) with fibre noise and torn zigzag edges on a pale desk; IBM Plex Mono only; near-black ink, dashed perforation rules, dotted price leaders; one teal ink (#0b786c) for switches, the swap icon and the rubber stamp; pastel initial discs; black rubber-plate buttons.
+  STORY: The group sees every rupee on one receipt, adds theirs in seconds, then settles with a handful of tap-to-pay UPI cards, at most n - 1.
+  FIRST VIEWPORT: Trip receipt: back / Koto Holo / menu, dashed rule, trip name 34px bold, "6 members · 23 expenses · ₹18,450", six avatar discs, your balance line, then the expense list; sticky Settle up + Add expense strip.
+  FORM: User-pinned direction "A · receipt" from builds/ui-concepts/hisaab (approved comp hisaab_a_receipt.png). No concept roll: the user picked it.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+  <main class="desk">
+    <article class="receipt" id="app" aria-label="Koto Holo">
+      <noscript>
+        <div class="block"><p class="h2">Koto Holo needs JavaScript to load your group.</p></div>
+      </noscript>
+    </article>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog class="sheet" id="sheet" aria-label="Group options"></dialog>
+  <script src="assets/vendor/sakuga/button.js"></script>
+  <script src="assets/vendor/sakuga/checkbox.js"></script>
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>
