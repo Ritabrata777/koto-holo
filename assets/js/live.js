@@ -7,7 +7,7 @@
 //    version straight away. The ping carries no data, and the channel name is a
 //    hash, so it never reveals the token. If Realtime is unavailable, polling
 //    alone keeps everyone in sync.
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../../config.js';
+import { SUPABASE_URL, SUPABASE_API_KEY } from '../../config.js';
 import { api } from './api.js';
 
 async function channelFor(token) {
@@ -71,7 +71,7 @@ export function watchTrip(token, startVersion, onChange) {
       topic = `realtime:${await channelFor(token)}`;
       const url =
         SUPABASE_URL.replace(/^http/, 'ws') +
-        `/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_ANON_KEY)}&vsn=1.0.0`;
+        `/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_API_KEY)}&vsn=1.0.0`;
       ws = new WebSocket(url);
     } catch {
       return;
@@ -82,7 +82,8 @@ export function watchTrip(token, startVersion, onChange) {
         'phx_join',
         {
           config: { broadcast: { self: false, ack: false }, presence: { key: '' }, postgres_changes: [], private: false },
-          access_token: SUPABASE_ANON_KEY,
+          // The gateway uses the WebSocket's apikey for publishable keys.
+          ...(SUPABASE_API_KEY.startsWith('sb_publishable_') ? {} : { access_token: SUPABASE_API_KEY }),
         },
         true
       );

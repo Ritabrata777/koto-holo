@@ -1,4 +1,4 @@
-// Hisaab money maths. Pure functions: no DOM, no network, so the same file runs
+// Expense Tracker money maths. Pure functions: no DOM, no network, so the same file runs
 // in the browser and in the Node unit tests (tests/settle.test.mjs).
 //
 // Every amount is an integer number of paise. Rupees only exist at display time.
@@ -33,6 +33,16 @@ export function orderedSplit(split, members) {
 
 /** Each member's share of one expense, in paise. */
 export function expenseShares(expense, members) {
+  if (expense.shares != null) {
+    const entries = Object.entries(expense.shares);
+    const ids = new Set(expense.split);
+    if (!entries.length || entries.length !== ids.size || entries.some(([id, amount]) =>
+      !ids.has(id) || !members.some((m) => m.id === id) || !Number.isSafeInteger(amount) || amount < 0
+    ) || entries.reduce((sum, [, amount]) => sum + amount, 0) !== expense.amount_paise) {
+      throw new RangeError('Shares must match the selected members and add up to the expense');
+    }
+    return new Map(entries);
+  }
   return splitEqually(expense.amount_paise, orderedSplit(expense.split, members));
 }
 
@@ -165,7 +175,7 @@ export function upiLink({ pa, pn, amountPaise, tn }) {
     `pn=${encodeURIComponent(ascii(pn, 40) || 'Friend')}`,
     `am=${upiAmount(amountPaise)}`,
     'cu=INR',
-    `tn=${encodeURIComponent(ascii(tn, 40) || 'Hisaab')}`,
+    `tn=${encodeURIComponent(ascii(tn, 40) || 'Expense Tracker')}`,
   ];
   return `upi://pay?${params.join('&')}`;
 }

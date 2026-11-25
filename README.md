@@ -1,36 +1,38 @@
-# Hisaab
+# Koto Holo
 
-**Split a trip with friends. Settle it in a few UPI payments.**
+**Share expenses. Settle in UPI.**
 
-Everyone joins the trip from one link and adds what they paid. Didn't eat the pizza? Leave yourself out of that one. At the end, Hisaab nets out who owes what and lists the payments that square everyone: **never more than one fewer than the number of people** (6 friends, 5 payments at most). Each payment is a UPI link with the amount filled in, plus a QR code.
+Everyone joins a group from one link and adds what they paid. Didn't eat the pizza? Leave yourself out of that one. At the end, Koto Holo nets out who owes what and lists the payments that square everyone: **never more than one fewer than the number of people** (6 friends, 5 payments at most). Each payment is a UPI link with the amount filled in, plus a QR code.
 
-No sign-up, no app to install, no ads. Open source, so you can host your own copy for free.
+Sign in with Google or email through Clerk. No app to install, no ads. Open source, so you can host your own copy for free.
 
-**Use it:** https://souradip121.github.io/hisaab/
-
-![Trip, add expense and settle up screens](docs/screens.png)
+**Use it:** https://kotoholo.vercel.app/
 
 ---
 
 ## How the maths works
 
-1. **Equal split, paise-exact.** Every amount is stored as whole paise. An expense of ₹100 split 3 ways is ₹33.34 + ₹33.33 + ₹33.33: the leftover paise go to the first people in the trip's join order, so shares always add back up to the bill.
+1. **Equal or exact split, paise-exact.** Choose **Exact amounts** to enter each selected person's share in rupees (zero is allowed); the shares must add up to the bill. Equal splitting remains the default. Every amount is stored as whole paise. An expense of ₹100 split 3 ways is ₹33.34 + ₹33.33 + ₹33.33: the leftover paise go to the first people in the trip's join order, so shares always add back up to the bill.
 2. **Net balances.** For each person: what they paid − their share of everything + payments they've sent − payments they've received. The balances always add up to exactly ₹0 (the app shows this under Balances).
 3. **Greedy settle-up.** First, anyone who owes exactly what someone else is owed pays them directly. Then the biggest debtor pays the biggest creditor until one of them is square, and repeat. Every payment squares at least one person and the last one squares two, so **n people never need more than n − 1 payments**.
 
 This is usually close to the fewest payments possible, but it is **not guaranteed to be the minimum** (finding the true minimum is a much harder problem). The app never claims it is.
 
-"Mark as paid" records a payment, so the remaining cards recalculate. Undo is one tap.
+"Mark as paid" records the full suggested payment. **Record part payment** lets you enter the amount actually paid, up to the displayed outstanding amount. Remaining cards recalculate after either action. Undo is one tap in the payment history. Recording a payment does not transfer money.
 
 The maths lives in [`assets/js/settle.js`](assets/js/settle.js) (no dependencies) and is tested in [`tests/settle.test.mjs`](tests/settle.test.mjs): thousands of random trips, including 300 trips of 6 people with 23 expenses, checking that balances add to zero, every transfer is positive whole paise, nobody pays themselves, there are at most n − 1 transfers, and paying them all leaves everyone at ₹0.
 
-## How your data is protected
+## Accounts and permissions
 
-- **The link is the key.** Creating a trip makes a secret token (24 random bytes, 32 characters) that lives after the `#` in the invite link. Browsers never send that part of a URL to the web host. Anyone with the link can see and edit that trip, so share it only with the people on the trip.
-- **The browser can't read any table.** Every `hs_` table has row-level security switched on with no policies, and the public `anon` role has no table privileges at all. A direct `GET /rest/v1/hs_trips` returns 401.
-- **Everything goes through functions that need the token.** The app calls `hs_get_trip`, `hs_add_expense` and friends. They're `SECURITY DEFINER` Postgres functions that look the trip up by its token and only ever touch that trip's rows. One trip's token can't reach another trip's members or expenses.
-- **Live updates leak nothing.** Phones poll `hs_trip_version(token)` and refetch only when it changes. They also listen on a Supabase Realtime *Broadcast* channel named after a SHA-256 hash of the token; a write sends a data-free "changed" ping there. If Realtime is off, polling alone keeps everyone in sync within a few seconds.
-- **What's stored:** the trip name, people's names, optional UPI IDs, expenses and recorded payments. No accounts, emails, phone numbers, cookies or analytics. The app remembers which trips you're on in your browser's local storage.
+Sign in with Google or email, save a profile name and UPI ID, and download your generated payment QR. Your groups are stored against your account and appear on every signed-in device.
+
+Members can add expenses and edit their own entries. Group owners can manage all expenses. Only a payment's sender, receiver or group owner can record or undo it. A member can change only their own payment details. These rules are enforced in the database, including on older API endpoints.
+
+Group tables and profiles have row-level security and no direct browser grants. Authenticated RPCs check membership and identity; a copied member ID or a name is not proof of identity. Invite links let signed-in users join, but reveal only the group name and member count before joining.
+
+Clerk stores account emails and manages login sessions. The app stores names, UPI IDs, memberships, expenses and recorded payments. Account sessions are persisted in the browser by Clerk. Sign-out clears the displayed group data.
+
+**Existing installations:** follow [Account setup and migration](docs/accounts-setup.md) before deploying. Old groups retain their balances but need their owner securely linked to an account; names and browser history are never used to grant ownership.
 
 ## Host your own copy (free, about 10 minutes)
 
@@ -39,26 +41,22 @@ You need a GitHub account and a free [Supabase](https://supabase.com) account.
 1. **Fork this repo** (or download it).
 2. **Create a Supabase project** (free plan is fine). Any region; pick the one closest to your friends.
 3. **Create the tables and functions.** In the Supabase dashboard open **SQL Editor**, paste the whole of [`schema.sql`](schema.sql) and press **Run**. It only creates objects whose names start with `hs_`, and it's safe to run again. It can share a project with other apps.
-4. **Point the app at your project.** In the dashboard go to **Project Settings → API** and copy the **Project URL** and the **anon public** key into [`config.js`](config.js). Never put the `service_role` key there: the anon key is meant to be public, the service key is not.
-5. **Publish it.**
+4. **Point the app at your project.** Copy the **Project URL** and **publishable key** from your Supabase dashboard into [`config.js`](config.js). An existing legacy `anon` key also works. Keep privileged keys server-side. The static site reads `config.js` directly. If you keep a local `.env.local`, copy any settings you change there into `config.js` before serving or publishing the app.
+5. **Enable sign-in.** Follow [Account setup](docs/accounts-setup.md) to configure Clerk and its native Supabase integration.
+6. **Publish it.**
    - **GitHub Pages:** repo **Settings → Pages → Build and deployment → Deploy from a branch**, branch `main`, folder `/ (root)`. Your app appears at `https://<you>.github.io/hisaab/` a minute later.
-   - **Netlify or Vercel:** import the repo. There's no build step: leave the build command empty and the publish directory as the repo root.
+   - **Netlify or Vercel:** install dependencies, use `npm run build` and publish `dist`. Vercel also has a checked-in configuration.
 
-Then check everything works against your project:
+Then validate the implementation:
 
 ```bash
-npm test                 # settlement maths (Node 18+, no installs)
-npm run check:live       # 28 checks against your Supabase project, using only the anon key
-npm run seed:demo        # optional: creates a demo "Digha trip" and prints its link
+npm ci
+npm test                 # money maths and database permission tests
+npm run build            # refresh the bundled Clerk SDK and build dist
+npm run serve            # http://127.0.0.1:5174/
+npm run check:accounts-ui # separate terminal, requires installed Edge
+npm run check:live        # read-only anonymous-access checks after migration 003
 ```
-
-`check:live` creates two small trips named `live-check …`. Remove them afterwards in the SQL Editor:
-
-```sql
-delete from public.hs_trips where name like 'live-check %';
-```
-
-To run the site locally, serve the folder with any static server, e.g. `python -m http.server 8000`, and open http://localhost:8000.
 
 ## Free-tier notes
 
@@ -67,22 +65,24 @@ Limits as of late 2026; check [supabase.com/pricing](https://supabase.com/pricin
 - **Database size:** the free plan's 500 MB is plenty. A trip with 6 people and 25 expenses is a few kilobytes, so even a whole college's trips won't come close.
 - **Pausing:** free projects pause after about a week with no activity. A paused project shows "The server is waking up" in the app. To wake it, open the project in the Supabase dashboard and press **Restore project**; it takes a couple of minutes.
 - **Realtime:** the free plan allows a few hundred simultaneous connections. If you go over, the live ping stops but polling keeps every phone in sync.
-- **Abuse:** anyone can create trips with your anon key (that's how the app works). Each trip is capped at 30 people, 500 expenses and 500 payments, and every text field has a length limit. If someone spams your project, you can delete trips from the SQL Editor.
+- **Abuse:** verified signed-in users can create groups; the public API key alone cannot. Each trip is capped at 30 people, 500 expenses and 500 payments, and every text field has a length limit. If someone spams your project, you can delete trips from the SQL Editor.
 - **Hosting:** GitHub Pages, Netlify and Vercel all host a static site like this for free.
 
 ## Paying through UPI
 
-Each settle-up card has a **Pay via UPI** button that opens a `upi://pay?pa=…&pn=…&am=…&cu=INR&tn=…` link: the payee's UPI ID, their name, the amount and the trip name are filled in. The button only appears when the person being paid has added a UPI ID (anyone on the trip can add or fix it).
+Each settle-up card has a **Pay via UPI** button that opens a `upi://pay?pa=…&pn=…&am=…&cu=INR&tn=…` link: the payee's UPI ID, their name, the amount and the trip name are filled in. The button only appears when the person being paid has added a UPI ID (only that member can add or fix it).
 
-- Some UPI apps refuse prefilled payments to personal UPI IDs, or ask you to confirm the amount again. If yours does, tap **Show QR** and scan it from another phone, or copy the UPI ID and pay manually.
+- Each card shows the recipient's UPI ID and a **Copy UPI ID** button. If a linked payment fails without a debit, open your UPI app directly, paste the ID and enter the displayed amount. Confirm the bank-verified recipient name before paying.
+- A "UPI risk policy" rejection is issued by the UPI app or bank. Koto Holo cannot override it or determine the exact trigger. The generated QR contains the same payment details as the link and is not a guaranteed fix. If manual payment is also rejected, contact support in your UPI app or your bank. See [BHIM's transaction troubleshooting](https://www.bhimupi.org.in/faq-s.html).
+- If a payment is pending or money was debited, check its status in your UPI app before retrying. Expand **Payment failed or blocked?** on a card for this guidance.
 - Links inside Instagram's or other apps' built-in browsers may not open UPI apps. Open the trip in Chrome or Safari instead.
-- Hisaab never touches money. Marking a card as paid is just a note for the group, so only mark it once the payment has gone through.
+- Koto Holo never touches money. Marking a card as paid is just a note for the group, so only mark it once the payment has gone through.
 
 ## Project layout
 
 ```
 index.html               the app shell
-config.js                your Supabase URL + anon key (nothing else)
+config.js                your Supabase URL + public API key
 schema.sql               tables, RLS, functions (all hs_*)
 assets/js/settle.js      the money maths (pure, tested)
 assets/js/app.js         screens and routing
@@ -100,4 +100,12 @@ scripts/                 live check, demo seed
 - Icons: path data from [Lucide](https://lucide.dev) (ISC licence); the train and receipt icons are drawn for this app.
 - QR codes: [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) by Kazuhiko Arase (MIT).
 
-Made by [@souradip.sh](https://www.instagram.com/souradip.sh/). MIT licensed, see [LICENSE](LICENSE).
+MIT licensed, see [LICENSE](LICENSE).
+
+## Updating an existing installation for exact splits
+
+For installations predating accounts, run [`migrations/001_exact_splits.sql`](migrations/001_exact_splits.sql) in your Supabase SQL Editor. It adds nullable exact shares and validated v2 expense functions, and updates the trip response. Existing expenses remain equal splits. The migration is transactional and safe to rerun. New installations can use the updated `schema.sql` instead.
+
+This release supports unequal **exact amounts**; percentage and weighted-share entry are not included.
+
+For the Clerk account release, run migration 003 after migration 001; migration 002 is the superseded Supabase-login implementation. Follow [the account setup guide](docs/accounts-setup.md); do not rerun 001 after accounts are installed.

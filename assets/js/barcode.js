@@ -43,7 +43,7 @@ export function bars(text) {
 }
 
 export function barcodeSVG(text, { height = 44, label = '' } = {}) {
-  const ascii = String(text).normalize('NFKD').replace(/[^\x20-\x7E]/g, '').toUpperCase().slice(0, 24) || 'HISAAB';
+  const ascii = String(text).normalize('NFKD').replace(/[^\x20-\x7E]/g, '').toUpperCase().slice(0, 24) || 'EXPENSE TRACKER';
   const { bars: list, width } = bars(ascii);
   const rects = list.map(([x, w]) => `<rect x="${x}" y="0" width="${w}" height="${height}"/>`).join('');
   return `<svg class="barcode" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${label || 'Barcode: ' + ascii}" fill="currentColor" shape-rendering="crispEdges">${rects}</svg>`;

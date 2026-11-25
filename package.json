@@ -1,5 +1,5 @@
 {
-  "name": "hisaab",
+  "name": "expense-tracker",
   "version": "1.0.0",
   "private": true,
   "description": "Split a trip with friends and settle it in at most n-1 UPI payments. Static site + Supabase.",
@@ -9,9 +9,22 @@
     "test": "node --test",
     "check:live": "node scripts/live-check.mjs",
     "seed:demo": "node scripts/seed-demo.mjs",
-    "serve": "npx --yes serve -l 5174 ."
+    "serve": "node scripts/serve.mjs",
+    "build:auth": "node scripts/build-auth.mjs",
+    "build": "node scripts/build-auth.mjs && node scripts/build.mjs",
+    "check:accounts-ui": "node scripts/check-accounts-ui.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.6.0",
+    "esbuild": "0.28.2",
+    "playwright": "1.65.1"
+  },
+  "dependencies": {
+    "@clerk/clerk-js": "6.47.0",
+    "jsqr": "1.4.0",
+    "svix": "2.11.1"
   }
 }

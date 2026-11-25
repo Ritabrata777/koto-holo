@@ -1,10 +1,7 @@
-// Hisaab's only settings: your Supabase project URL and its public anon key.
-// The anon key is meant to be public. It can't read or write any table, because
-// RLS locks every hs_ table; it can only call the hs_* functions, and each of
-// those needs a trip's secret token. Never put the service_role key here.
-//
-// Self-hosting? Replace both values with your own project's (Supabase dashboard
-// -> Project Settings -> API).
-export const SUPABASE_URL = 'https://nkcmgcunnrqulocdwgxr.supabase.co';
-export const SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5rY21nY3VubnJxdWxvY2R3Z3hyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxMjc3ODksImV4cCI6MjEwNDcwMzc4OX0.jzOZ7JV1X5mLazg7GBKLhISdK17DaecO8qoooXTAzBc';
+// Public settings used by the static app and the Node scripts.
+// Use your Supabase project URL and publishable key. Keep privileged keys server-side.
+export const SUPABASE_URL = 'https://yrjaqjluvqkqyfkbrfyq.supabase.co';
+export const SUPABASE_API_KEY = 'sb_publishable_WE6o4ddP_75qQmwVDt_3jQ_b17txt91';
+
+// Clerk Dashboard > API keys. Publishable key only; never put a secret key here.
+export const CLERK_PUBLISHABLE_KEY = 'pk_test_Y29oZXJlbnQtcG9sbGl3b2ctMTM1OC5jbGVyay5hY2NvdW50cy5kZXYk';
