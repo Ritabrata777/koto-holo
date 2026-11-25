@@ -695,6 +695,11 @@ em { font-style: normal; color: var(--muted); font-weight: 400; }
 .qr svg { display: block; width: 100%; height: auto; border-radius: 4px; }
 .qr-cap { max-width: 30ch; text-align: center; font-size: 13.5px; font-weight: 400; color: var(--muted); }
 .qr-upi { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 500; color: var(--ink); }
+.card-manual { margin: 8px 0 12px; }
+.card-manual .qr-upi { flex-wrap: wrap; }
+.card-manual .qr-upi > span { min-width: 0; overflow-wrap: anywhere; }
+.payment-help { margin-top: 10px; font-size: 13.5px; color: var(--muted); }
+.payment-help summary { cursor: pointer; color: var(--ink); }
 
 /* The card being marked paid gets stamped, then lifts away. */
 .card.is-paid::after {
@@ -1006,3 +1011,10 @@ sakuga-checkbox::part(label) { min-height: 44px; padding: 5px; gap: 0; }
 
 /* Keep the effect canvas from widening the mobile document. */
 html, body { overflow-x: clip; }
+
+.exact-share { width: 100px; flex: 0 1 100px; min-width: 60px; text-align: right; }
+.card-foot { flex-wrap: wrap; }
+.account-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; overflow-wrap: anywhere; }
+.profile-qr { display: grid; justify-items: center; gap: 12px; margin: 24px 0; text-align: center; }
+[data-profile-form], [data-email-form], [data-otp-form] { margin: 18px 0; }
+.qr img { display: block; width: 100%; height: auto; border-radius: 4px; }

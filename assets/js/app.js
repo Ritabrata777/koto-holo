@@ -1,3 +1,4 @@
+import { readPaymentQr, paymentQrSource } from './payment-qr.js';
 // Koto Holo: the app. Hash routes, one receipt per screen.
 //   #/                      start a trip, your groups
 //   #/t/<token>             the group (or the join form if this device isn't on it)
@@ -5,12 +6,15 @@
 //   #/t/<token>/e/<id>      edit an expense
 //   #/t/<token>/settle      settle up
 // The token lives in the URL fragment, so it is never sent to the web host.
-import { api, messageFor, ApiError } from './api.js';
+import { auth, initializeAuth } from './auth.js';
+import { api, rpc, messageFor, ApiError } from './api.js';
 import { watchTrip } from './live.js';
 import {
   settleTrip,
   orderedSplit,
   splitEqually,
+  expenseShares,
+  upiAmount,
   rupees,
   parseRupees,
   upiLink,
@@ -28,46 +32,23 @@ const app = $('#app');
 const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ---------------------------------------------------------------------------
-// Device memory: which trips this phone is on, and who you are on each.
+// Account state: memberships are fetched from the database.
 // ---------------------------------------------------------------------------
-const store = {
-  read(key, fallback) {
-    try {
-      const v = localStorage.getItem(key);
-      return v ? JSON.parse(v) : fallback;
-    } catch {
-      return fallback;
-    }
-  },
-  write(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch {
-      /* private mode: the app still works, it just won't remember */
-    }
-  },
-  remove(key) {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      /* ignore */
-    }
-  },
-};
-const TRIPS = 'hisaab.trips.v1';
-const cacheKey = (token) => `hisaab.cache.${token}`;
-const myTrips = () => store.read(TRIPS, {});
+let currentUser = null;
+let accountProfile = null;
+let profileLoaded = false;
+let accountGroups = {};
+const myTrips = () => accountGroups;
 const meFor = (token) => myTrips()[token]?.me || null;
 function rememberTrip(token, patch) {
   const all = myTrips();
   all[token] = { ...(all[token] || {}), ...patch, opened: Date.now() };
-  store.write(TRIPS, all);
+  accountGroups = all;
 }
 function forgetTrip(token) {
   const all = myTrips();
   delete all[token];
-  store.write(TRIPS, all);
-  store.remove(cacheKey(token));
+  accountGroups = all;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,20 +61,22 @@ function useTrip(token) {
   session.watcher?.stop();
   session.watcher = null;
   session.token = token;
-  session.data = store.read(cacheKey(token), null);
+  session.data = null;
   session.inflight = null;
 }
 
 async function refresh() {
   const token = session.token;
+  const userId = currentUser?.id;
   if (!token) return null;
   if (session.inflight) return session.inflight;
   session.inflight = (async () => {
     try {
       const data = await api.getTrip(token);
-      if (token !== session.token) return null;
+      if (token !== session.token || userId !== currentUser?.id) return null;
       session.data = data;
-      store.write(cacheKey(token), data);
+      // Identity and permissions come from the server, never browser storage.
+      rememberTrip(token, { me: data.trip.me, name: data.trip.name, people: data.members.length });
       if (myTrips()[token] || meFor(token)) {
         rememberTrip(token, { name: data.trip.name, people: data.members.length });
       }
@@ -152,6 +135,7 @@ const TOKEN = '([A-Za-z0-9_-]{24,64})';
 function parseRoute() {
   const h = decodeURIComponent(location.hash || '');
   let m;
+  if (h === '#/profile') return { view: 'profile' };
   if ((m = new RegExp(`^#/t/${TOKEN}/add$`).exec(h))) return { view: 'add', token: m[1] };
   if ((m = new RegExp(`^#/t/${TOKEN}/settle$`).exec(h))) return { view: 'settle', token: m[1] };
   if ((m = new RegExp(`^#/t/${TOKEN}/e/([0-9a-f-]{36})$`).exec(h))) return { view: 'edit', token: m[1], id: m[2] };
@@ -165,51 +149,76 @@ const go = (hash) => {
 const tripHash = (token, rest = '') => `#/t/${token}${rest}`;
 const inviteUrl = (token) => `${location.origin}${location.pathname}#/t/${token}`;
 
+// A single daily record per account. Failed writes can retry on navigation.
+let activityKey;
+function recordSiteActivity(userId) {
+  const key = userId + ':' + new Date().toISOString().slice(0, 10);
+  if (key === activityKey) return;
+  activityKey = key;
+  rpc('hs_record_site_activity').catch(() => {
+    if (activityKey === key) activityKey = undefined;
+  });
+}
+
 let renderSeq = 0;
 async function render({ keepScroll = false } = {}) {
   const seq = ++renderSeq;
   const route = parseRoute();
   const y = window.scrollY;
   closeSheet();
+  if (!currentUser) {
+    paint(signInScreen());
+    return;
+  }
+  recordSiteActivity(currentUser.id);
+  if (!profileLoaded) {
+    paint(loadingScreen());
+    try { const profile = await api.profile(); if (seq !== renderSeq || !currentUser) return; accountProfile = profile; profileLoaded = true; }
+    catch (err) { if (seq === renderSeq) paint(accountErrorScreen(err)); return; }
+    if (seq !== renderSeq) return;
+  }
+  if (!accountProfile?.upi || !accountProfile?.upi_qr || route.view === 'profile') {
+    paint(profileScreen());
+    return;
+  }
 
   if (route.view === 'home') {
     session.watcher?.stop();
     session.watcher = null;
     session.token = null;
     session.data = null;
-    paint(homeScreen());
+    paint(loadingScreen());
+    try {
+      const groups = await api.groups();
+      if (seq !== renderSeq) return;
+      accountGroups = Object.fromEntries(groups.map(({ token, ...group }) => [token, group]));
+      paint(homeScreen());
+    } catch (err) { if (seq === renderSeq) paint(accountErrorScreen(err)); }
     document.title = 'Koto Holo · share expenses, settle in UPI';
     return;
   }
 
   useTrip(route.token);
-  if (!session.data) {
+  if (!session.data || !keepScroll) {
     paint(loadingScreen());
     try {
       await refresh();
     } catch (err) {
       if (seq !== renderSeq) return;
-      paint(errorScreen(err, route.token));
+      if (err?.code === 'not_a_member') {
+        try { const invite = await api.invite(route.token); if (seq === renderSeq) paint(accountJoinScreen(route.token, invite)); }
+        catch (inviteError) { if (seq === renderSeq) paint(accountErrorScreen(inviteError)); }
+      } else paint(accountErrorScreen(err));
       return;
     }
-  } else if (!keepScroll) {
-    // Show the cached copy now; repaint only if the server has something newer.
-    const before = session.data.trip.version;
-    refresh()
-      .then((fresh) => {
-        if (seq === renderSeq && fresh && fresh.trip.version !== before) onRemoteChange();
-      })
-      .catch((err) => {
-        if (err instanceof ApiError && err.code === 'trip_not_found' && seq === renderSeq) paint(errorScreen(err, route.token));
-      });
   }
   if (seq !== renderSeq) return;
   const data = session.data;
   document.title = `${data.trip.name} · Koto Holo`;
 
-  const me = data.members.find((m) => m.id === meFor(route.token));
+  const me = data.members.find((m) => m.id === data.trip.me);
   if (!me) {
-    paint(joinScreen(route.token, data));
+    paint(accountErrorScreen(new ApiError('not_a_member', 403)));
     return;
   }
   if (route.view === 'trip') paint(tripScreen(route.token, data, me));
@@ -217,7 +226,7 @@ async function render({ keepScroll = false } = {}) {
   else if (route.view === 'add') paint(expenseScreen(route.token, data, me, null));
   else if (route.view === 'edit') {
     const exp = data.expenses.find((e) => e.id === route.id);
-    paint(exp ? expenseScreen(route.token, data, me, exp) : missingScreen(route.token));
+    paint(exp ? canEditExpense(data, me, exp) ? expenseScreen(route.token, data, me, exp) : expenseDetailScreen(route.token, data, exp) : missingScreen(route.token));
   }
   if (keepScroll) window.scrollTo(0, y);
 }
@@ -299,6 +308,7 @@ function homeScreen() {
     : '';
   return {
     html: `${bar()}
+      <div class="block account-bar"><span>${esc(accountProfile?.name)}</span><button class="text-btn" type="button" data-profile>My profile</button></div>
       ${rule()}
       <section class="block intro">
         <h1 class="display">Share expenses.<br>Settle in UPI.</h1>
@@ -319,7 +329,7 @@ function homeScreen() {
           <span class="field-label">Your UPI ID</span>
           <input class="field-input" name="upi" maxlength="120" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="email" placeholder="name@upi">
         </label>
-        <p class="hint">So members can pay you back in one tap. You can add it later.</p>
+        <p class="hint">To change your UPI ID, open My profile.</p>
         <p class="form-error" role="alert" hidden></p>
         <sakuga-button class="sakuga-action" type="submit">Create group</sakuga-button>
       </form>
@@ -327,13 +337,17 @@ function homeScreen() {
       ${rule()}
       <section class="block about">
         <ul class="lines lines-quiet">
-          <li class="line"><span class="line-main"><span class="line-name">No sign-up</span><span class="leader"></span><span class="line-val">one link</span></span></li>
+          <li class="line"><span class="line-main"><span class="line-name">Your groups</span><span class="leader"></span><span class="line-val">on every device</span></span></li>
           <li class="line"><span class="line-main"><span class="line-name">Pays out via</span><span class="leader"></span><span class="line-val">any UPI app</span></span></li>
         </ul>
       </section>
       ${stub('Koto Holo')}`,
     bind(root) {
       const form = $('#create', root);
+      form.elements.name.value = accountProfile.name;
+      form.elements.upi.value = accountProfile.upi || '';
+      form.elements.upi.readOnly = true;
+      $('[data-profile]', root).addEventListener('click', () => go('#/profile'));
       form.addEventListener('submit', async (ev) => {
         ev.preventDefault();
         const f = new FormData(form);
@@ -367,87 +381,6 @@ function homeScreen() {
 // ---------------------------------------------------------------------------
 // Join: pick yourself, or add yourself
 // ---------------------------------------------------------------------------
-function joinScreen(token, data) {
-  const n = data.members.length;
-  const total = totalOf(data);
-  return {
-    html: `${bar({ back: '#/' })}
-      ${rule()}
-      <section class="block trip-head">
-        <h1 class="display">${esc(data.trip.name)}</h1>
-        <p class="meta">${plural(n, 'member')}<span class="dot">·</span>${total ? `${rupees(total)} so far` : 'nothing spent yet'}</p>
-        <div class="avatars">${data.members.map((m) => avatar(m)).join('')}</div>
-      </section>
-      ${rule()}
-      <form class="block form" id="join" novalidate>
-        <h2 class="h2">You're invited. Join in</h2>
-        <label class="field">
-          <span class="field-label">Your name</span>
-          <input class="field-input" name="name" maxlength="24" autocomplete="given-name" placeholder="Your name" required>
-        </label>
-        <label class="field">
-          <span class="field-label">Your UPI ID</span>
-          <input class="field-input" name="upi" maxlength="120" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="email" placeholder="name@upi">
-        </label>
-        <p class="hint">Add it and members can pay you back in one tap.</p>
-        <p class="form-error" role="alert" hidden></p>
-        <sakuga-button class="sakuga-action" type="submit">Join group</sakuga-button>
-      </form>
-      ${
-        n
-          ? `${rule()}
-      <section class="block">
-        <h2 class="h2">Already on it?</h2>
-        <p class="hint hint-top">Opening this on a new phone? Tap your name.</p>
-        <div class="claim">
-          ${data.members
-            .map((m) => `<button class="chip" type="button" data-claim="${m.id}">${avatar(m, { size: 'av-sm' })}<span>${esc(m.name)}</span></button>`)
-            .join('')}
-        </div>
-      </section>`
-          : ''
-      }
-      ${stub(data.trip.name)}`,
-    focus: '#join input[name=name]',
-    bind(root) {
-      const form = $('#join', root);
-      form.addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        const f = new FormData(form);
-        const name = String(f.get('name') || '').trim();
-        const upi = cleanUpi(f.get('upi'));
-        const err = $('.form-error', form);
-        const fail = (msg, field) => {
-          err.textContent = msg;
-          err.hidden = false;
-          if (field) form.elements[field].focus();
-        };
-        if (!name) return fail('Add your name first.', 'name');
-        if (!upi.ok) return fail("That doesn't look like a UPI ID. It's like name@okaxis.", 'upi');
-        await busy(form, async () => {
-          try {
-            const res = await api.join(token, name, upi.value);
-            rememberTrip(token, { me: res.member_id, name: data.trip.name });
-            await afterWrite(res);
-            toast(`You're in. Welcome to ${data.trip.name}.`);
-            render();
-          } catch (e) {
-            fail(messageFor(e), e?.code === 'name_taken' ? 'name' : e?.code === 'bad_upi' ? 'upi' : null);
-          }
-        });
-      });
-      $$('[data-claim]', root).forEach((btn) =>
-        btn.addEventListener('click', () => {
-          const m = data.members.find((x) => x.id === btn.dataset.claim);
-          rememberTrip(token, { me: m.id, name: data.trip.name, people: data.members.length });
-          toast(`Welcome back, ${m.name}.`);
-          render();
-        })
-      );
-    },
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Trip receipt
 // ---------------------------------------------------------------------------
@@ -473,7 +406,7 @@ function tripScreen(token, data, me) {
     n === 1 || fresh
       ? `<section class="block invite">
           <h2 class="h2">Send this to the group</h2>
-          <p class="hint hint-top">Anyone with the link can join and add expenses. Only share it with the group.</p>
+          <p class="hint hint-top">Signed-in people with the link can join and add expenses. Only share it with the group.</p>
           <p class="invite-url"><span>${esc(inviteUrl(token).replace(/^https?:\/\//, ''))}</span></p>
           <div class="pair">
             <sakuga-button class="sakuga-action plate-sm" type="button" data-share>${icon('share', { size: 18 })}<span>Share link</span></sakuga-button>
@@ -509,7 +442,7 @@ function tripScreen(token, data, me) {
             <span class="ex-ic">${icon(iconFor(e.title), { size: 26, stroke: 1.75 })}</span>
             <span class="ex-body">
               <span class="ex-top"><span class="ex-title">${esc(e.title)}</span><span class="leader"></span><span class="ex-amt">${rupees(e.amount_paise)}</span></span>
-              <span class="ex-sub">paid by ${esc(payer?.name || 'someone')}${who}</span>
+              <span class="ex-sub">paid by ${esc(payer?.name || 'someone')}${who}${e.shares ? ' ? exact amounts' : ''}</span>
             </span>
             ${icon('chevron', { size: 20, cls: 'ex-chev' })}
           </a></li>`;
@@ -571,6 +504,7 @@ function expenseScreen(token, data, me, existing) {
   const editing = Boolean(existing);
   const state = {
     amount: existing ? groupAmount((existing.amount_paise / 100).toFixed(existing.amount_paise % 100 ? 2 : 0)) : '',
+    mode: existing?.shares ? 'exact' : 'equal',
     title: existing?.title || '',
     paidBy: existing?.paid_by || me.id,
     split: new Set(existing ? existing.split : members.map((m) => m.id)),
@@ -609,6 +543,13 @@ function expenseScreen(token, data, me, existing) {
             <legend class="h2">Split between</legend>
             <button class="text-btn" type="button" data-all>Everyone</button>
           </div>
+          <label class="hint">Split method
+            <select class="field-input" name="split_mode">
+              <option value="equal" ${state.mode === 'equal' ? 'selected' : ''}>Equally</option>
+              <option value="exact" ${state.mode === 'exact' ? 'selected' : ''}>Exact amounts</option>
+            </select>
+          </label>
+          <p class="hint" data-split-total aria-live="polite"></p>
           <ul class="split-list">
             ${members
               .map(
@@ -617,6 +558,7 @@ function expenseScreen(token, data, me, existing) {
                   <span class="split-name">${esc(m.name)}${m.id === me.id ? ' <em>(you)</em>' : ''}</span>
                   <span class="leader"></span>
                   <span class="split-amt" data-share-of="${m.id}"></span>
+                  <input class="field-input exact-share" data-exact="${m.id}" inputmode="decimal" aria-label="${esc(m.name)} share in rupees" placeholder="0.00" value="${existing?.shares?.[m.id] != null ? upiAmount(existing.shares[m.id]) : ''}" hidden>
                   <sakuga-checkbox name="split" value="${m.id}" ${state.split.has(m.id) ? 'checked' : ''}><span class="sr-only">Split with ${esc(m.name)}</span></sakuga-checkbox>
                 </div></li>`
               )
@@ -642,6 +584,10 @@ function expenseScreen(token, data, me, existing) {
         const len = Math.max(1, amountInput.value.length || 1);
         amountInput.style.width = `${len + 0.15}ch`;
       };
+      const exactShares = () => Object.fromEntries([...state.split].map((id) => {
+        const value = $(`[data-exact="${id}"]`, form).value.trim();
+        return [id, /^0(?:\.0{0,2})?$/.test(value) ? 0 : parseRupees(value)];
+      }));
       const update = () => {
         const paise = parseRupees(amountInput.value);
         const chosen = orderedSplit([...state.split], members);
@@ -651,12 +597,24 @@ function expenseScreen(token, data, me, existing) {
           const on = state.split.has(m.id);
           cell.textContent = on ? (paise ? rupees(shares.get(m.id)) : '₹—') : '—';
           cell.closest('.split-row').classList.toggle('is-off', !on);
+          cell.hidden = state.mode === 'exact';
+          const exact = $(`[data-exact="${m.id}"]`, form);
+          exact.hidden = state.mode !== 'exact';
+          exact.disabled = !on;
         }
+        const total = Object.values(exactShares()).reduce((sum, value) => sum + (value || 0), 0);
+        $('[data-split-total]', form).textContent = state.mode === 'exact'
+          ? `Assigned ${rupees(total)} of ${rupees(paise || 0)}. Enter 0 for a selected person with no share.` : '';
         const k = chosen.length;
         saveLabel.textContent = k === 0 ? 'Save' : k === 1 ? 'Save · for 1 person' : `Save · split ${k} ways`;
         sizeAmount();
       };
 
+      form.elements.split_mode.addEventListener('change', () => {
+        state.mode = form.elements.split_mode.value;
+        update();
+      });
+      $$('[data-exact]', form).forEach((input) => input.addEventListener('input', update));
       amountInput.addEventListener('input', () => {
         // Keep it a clean number (one decimal point, 2 decimals), grouped like 1,23,456.
         const v = groupAmount(amountInput.value);
@@ -706,6 +664,9 @@ function expenseScreen(token, data, me, existing) {
         if (!title) return fail('Enter an expense description.', $('.what-input', form));
         if (state.split.size === 0) return fail('Pick at least one person to split it between.');
         const payload = { title, amount_paise: paise, paid_by: state.paidBy, split: orderedSplit([...state.split], members) };
+        payload.shares = state.mode === 'exact' ? exactShares() : null;
+        try { expenseShares(payload, members); }
+        catch { return fail('Enter every selected share (0 is allowed). Shares must add up exactly to the bill.'); }
         await busy(form, async () => {
           try {
             const res = editing ? await api.updateExpense(token, existing.id, payload) : await api.addExpense(token, payload, me.id);
@@ -771,6 +732,7 @@ function settleScreen(token, data, me) {
       const from = byId.get(t.from);
       const to = byId.get(t.to);
       const link = to.upi ? upiLink({ pa: to.upi, pn: to.name, amountPaise: t.amount, tn: data.trip.name }) : null;
+      const canPay = canRecordPayment(data, me, t);
       const yours = t.from === me.id ? 'is-mine' : t.to === me.id ? 'is-owed' : '';
       return `<li class="card ${yours}" data-i="${i}">
         <div class="card-main">
@@ -780,21 +742,31 @@ function settleScreen(token, data, me) {
             <p class="card-amt">${rupees(t.amount)}</p>
           </div>
           ${
-            link
+            link && t.from === me.id
               ? `<a class="plate plate-xs" href="${esc(link)}" data-pay>Pay via UPI</a>`
-              : `<button class="outline plate-xs" type="button" data-add-upi="${to.id}" title="${esc(to.name)} hasn't added a UPI ID">Add UPI ID</button>`
+              : !link && to.id === me.id ? `<button class="outline plate-xs" type="button" data-add-upi="${to.id}">Add UPI ID</button>` : ''
           }
         </div>
         <div class="card-foot">
           ${link ? `<button class="text-btn" type="button" data-qr aria-expanded="false">${icon('qr', { size: 17 })}<span>Show QR</span></button>` : `<span class="card-nupi">${esc(to.name)} has no UPI ID yet</span>`}
-          <sakuga-button class="sakuga-action sakuga-small" variant="secondary" type="button" data-paid><span>Mark as paid</span></sakuga-button>
+          ${canPay ? `<button class="text-btn" type="button" data-partial>Record part payment</button>` : ''}
+          ${canPay ? `<sakuga-button class="sakuga-action sakuga-small" variant="secondary" type="button" data-paid><span>Mark as paid</span></sakuga-button>` : ''}
         </div>
         ${
           link
-            ? `<div class="card-qr" hidden>
+            ? `<div class="card-manual">
+                <p class="qr-upi"><span>${esc(to.upi)}</span><button class="text-btn" type="button" data-copy-upi="${esc(to.upi)}">${icon('copy', { size: 16 })}<span>Copy UPI ID</span></button></p>
+                <details class="payment-help">
+                  <summary>Payment failed or blocked?</summary>
+                  <p class="hint">If the payment failed without a debit, copy this UPI ID, open your UPI app yourself and pay ${rupees(t.amount)}. Confirm the recipient's bank-verified name before paying.</p>
+                  <p class="hint">A risk-policy rejection comes from the UPI app or bank; Koto Holo cannot override it. If a manual payment is also blocked, contact support in your UPI app or your bank. This QR uses the same payment details and may also be rejected.</p>
+                  <p class="hint">If money was debited or the payment is pending, check its status in your UPI app before trying again.</p>
+                </details>
+                <p class="hint">Only mark as paid after your UPI app confirms success.</p>
+              </div>
+              <div class="card-qr" hidden>
                 <div class="qr" data-link="${esc(link)}"></div>
                 <p class="qr-cap">Scan with any UPI app to pay ${esc(to.name)} ${rupees(t.amount)}</p>
-                <p class="qr-upi"><span>${esc(to.upi)}</span><button class="text-btn" type="button" data-copy-upi="${esc(to.upi)}">${icon('copy', { size: 16 })}<span>Copy</span></button></p>
               </div>`
             : ''
         }
@@ -828,7 +800,7 @@ function settleScreen(token, data, me) {
             .map(
               (p) => `<li class="line">
                 <span class="line-main"><span class="line-name">${esc(byId.get(p.from)?.name)} → ${esc(byId.get(p.to)?.name)}</span><span class="leader"></span><span class="line-val">${rupees(p.amount_paise)}</span></span>
-                <button class="text-btn text-btn-sm" type="button" data-undo="${p.id}" aria-label="Undo ${esc(byId.get(p.from)?.name)} paid ${esc(byId.get(p.to)?.name)}">${icon('undo', { size: 16 })}<span>Undo</span></button>
+                ${canRecordPayment(data, me, p) ? `<button class="text-btn text-btn-sm" type="button" data-undo="${p.id}" aria-label="Undo ${esc(byId.get(p.from)?.name)} paid ${esc(byId.get(p.to)?.name)}">${icon('undo', { size: 16 })}<span>Undo</span></button>` : ''}
               </li>`
             )
             .join('')}
@@ -901,11 +873,26 @@ function settleScreen(token, data, me) {
           btn.setAttribute('aria-expanded', String(open));
           $('span', btn).textContent = open ? 'Hide QR' : 'Show QR';
           const q = $('.qr', box);
-          if (open && !q.firstChild) q.innerHTML = qrSvg(q.dataset.link);
+          if (open && !q.firstChild) {
+            q.innerHTML = qrSvg(q.dataset.link);
+            api.memberPaymentQr(token, to.id).then(async (base64) => {
+              const src = paymentQrSource(base64);
+              if (!src || !q.isConnected) return;
+              const blob = await (await fetch(src)).blob();
+              await readPaymentQr(blob, to.upi);
+              if (!q.isConnected) return;
+              const image = document.createElement('img');
+              image.src = src;
+              image.alt = 'Recipient?s uploaded UPI payment QR';
+              q.replaceChildren(image);
+              $('.qr-cap', box).textContent = `Scan ${to.name}?s QR and verify the recipient and ${rupees(t.amount)} before paying.`;
+            }).catch(() => { /* Keep the generated QR if the upload is unavailable. */ });
+          }
         });
         $('[data-copy-upi]', card)?.addEventListener('click', (ev) => copyText(ev.currentTarget.dataset.copyUpi, 'UPI ID copied.'));
-        $('[data-add-upi]', card)?.addEventListener('click', () => memberSheet(token, data, me, to));
-        $('[data-paid]', card).addEventListener('click', async (ev) => {
+        $('[data-add-upi]', card)?.addEventListener('click', () => go('#/profile'));
+        $('[data-partial]', card)?.addEventListener('click', () => partialPaymentSheet(token, t, from, to));
+        $('[data-paid]', card)?.addEventListener('click', async (ev) => {
           const btn = ev.currentTarget;
           btn.disabled = true;
           try {
@@ -1029,33 +1016,19 @@ function tripMenu(token, data, me) {
       <li><button type="button" data-act="copy">${icon('link', { size: 20 })}<span>Copy invite link</span></button></li>
       <li><button type="button" data-act="me">${icon('user', { size: 20 })}<span>Your name and UPI ID</span></button></li>
       <li><button type="button" data-act="people">${icon('users', { size: 20 })}<span>People in this group</span></button></li>
-      <li><button type="button" data-act="rename">${icon('pencil', { size: 20 })}<span>Rename group</span></button></li>
-      <li><button type="button" data-act="switch">${icon('swap', { size: 20 })}<span>Not ${esc(me.name)}? Switch</span></button></li>
-      <li><button type="button" data-act="forget">${icon('leave', { size: 20 })}<span>Remove from this phone</span></button></li>
+      ${data.trip.is_owner ? `<li><button type="button" data-act="rename">${icon('pencil', { size: 20 })}<span>Rename group</span></button></li>` : ''}
+      <li><button type="button" data-act="profile">${icon('user', { size: 20 })}<span>Account and payment QR</span></button></li>
+
     </ul>`,
     (root) => {
       bindClose(root);
       const acts = {
         share: () => shareInvite(token, data.trip.name),
         copy: () => copyText(inviteUrl(token), 'Invite link copied.'),
-        me: () => memberSheet(token, data, me, me),
+        me: () => { closeSheet(); go('#/profile'); },
         people: () => peopleSheet(token, data, me),
         rename: () => renameSheet(token, data),
-        switch: () => {
-          rememberTrip(token, { me: null });
-          closeSheet();
-          render();
-        },
-        forget: () =>
-          confirmSheet({
-            title: 'Remove this group from your phone?',
-            body: 'The group stays for everyone else. You can open it again from the invite link.',
-            action: 'Remove from phone',
-            run: async () => {
-              forgetTrip(token);
-              go('#/');
-            },
-          }),
+        profile: () => { closeSheet(); go('#/profile'); },
       };
       $$('[data-act]', root).forEach((b) =>
         b.addEventListener('click', () => {
@@ -1089,8 +1062,9 @@ function peopleSheet(token, data, me) {
             ${avatar(m, { size: 'av-sm', you: m.id === me.id })}
             <span class="person-body"><span class="person-name">${esc(m.name)}${m.id === me.id ? ' <em>(you)</em>' : ''}</span>
             <span class="person-upi">${m.upi ? esc(m.upi) : 'no UPI ID'}${r && r.net ? ` · ${r.net > 0 ? 'gets' : 'owes'} ${rupees(Math.abs(r.net))}` : ''}</span></span>
-            <button class="text-btn text-btn-sm" type="button" data-edit="${m.id}" aria-label="Edit ${esc(m.name)}">${icon('pencil', { size: 16 })}<span>Edit</span></button>
-            ${!active.has(m.id) && m.id !== me.id ? `<button class="text-btn text-btn-sm danger" type="button" data-remove="${m.id}" aria-label="Remove ${esc(m.name)}">${icon('close', { size: 16 })}</button>` : ''}
+            ${m.id === me.id ? `<button class="text-btn text-btn-sm" type="button" data-edit="${m.id}">Edit</button>` : ''}
+            ${data.trip.is_owner && !m.linked ? `<button class="text-btn text-btn-sm" type="button" data-link-member="${m.id}">Link account</button>` : ''}
+            ${data.trip.is_owner && !active.has(m.id) && m.id !== me.id ? `<button class="text-btn text-btn-sm danger" type="button" data-remove="${m.id}" aria-label="Remove ${esc(m.name)}">${icon('close', { size: 16 })}</button>` : ''}
           </li>`;
         })
         .join('')}
@@ -1102,6 +1076,7 @@ function peopleSheet(token, data, me) {
         closeSheet();
         shareInvite(token, data.trip.name);
       });
+      $$('[data-link-member]', root).forEach((b) => b.addEventListener('click', () => linkMemberSheet(token, b.dataset.linkMember)));
       $$('[data-edit]', root).forEach((b) =>
         b.addEventListener('click', () => memberSheet(token, data, me, data.members.find((m) => m.id === b.dataset.edit)))
       );
@@ -1136,7 +1111,7 @@ function memberSheet(token, data, me, member) {
       </label>
       <label class="field">
         <span class="field-label">UPI ID</span>
-        <input class="field-input" name="upi" maxlength="120" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="email" placeholder="name@upi" value="${esc(member.upi || '')}">
+        <input class="field-input" name="upi" readonly maxlength="120" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="email" placeholder="name@upi" value="${esc(member.upi || '')}">
       </label>
       <p class="hint">${self ? 'Members who owe you get a Pay via UPI button with your ID.' : `Double-check it with ${esc(member.name)}. Payments go to this ID.`}</p>
       <p class="form-error" role="alert" hidden></p>
@@ -1208,6 +1183,45 @@ function renameSheet(token, data) {
       });
     }
   );
+}
+
+function partialPaymentSheet(token, transfer, from, to) {
+  openSheet(`${sheetHead('Record a payment')}
+    <form data-payment-form novalidate>
+      <p class="hint">${esc(from.name)} pays ${esc(to.name)}. Outstanding: ${rupees(transfer.amount)}.</p>
+      <label class="hint">Amount actually paid (rupees)
+        <input class="field-input" name="amount" inputmode="decimal" autocomplete="off" placeholder="0.00">
+      </label>
+      <p class="hint">Record only a successful payment. The remaining balance will be recalculated.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <button class="plate" type="submit">Record payment</button>
+    </form>`, (root) => {
+      bindClose(root);
+      const form = $('[data-payment-form]', root);
+      form.elements.amount.focus();
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const amount = parseRupees(form.elements.amount.value);
+        const error = $('.form-error', form);
+        if (!amount || amount > transfer.amount) {
+          error.textContent = `Enter an amount above zero and no more than ${rupees(transfer.amount)}.`;
+          error.hidden = false;
+          return;
+        }
+        await busy(form, async () => {
+          try {
+            const result = await api.recordPayment(token, transfer.from, transfer.to, amount);
+            await afterWrite(result);
+            closeSheet();
+            toast(`${rupees(amount)} recorded. Remaining balances updated.`);
+            render({ keepScroll: true });
+          } catch (err) {
+            error.textContent = messageFor(err);
+            error.hidden = false;
+          }
+        });
+      });
+    });
 }
 
 function confirmSheet({ title, body, action, danger = false, run }) {
@@ -1325,7 +1339,35 @@ function groupAmount(raw) {
   return frac === null ? grouped : `${grouped || '0'}.${frac}`;
 }
 
-render();
+async function boot() {
+  paint(loadingScreen());
+  try {
+    const initialSession = await initializeAuth();
+    currentUser = initialSession?.user || null;
+    cleanSignInReturn();
+    auth.onAuthStateChange((event, next) => {
+      if ((next?.user?.id || null) === (currentUser?.id || null)) return;
+      currentUser = next?.user || null;
+      cleanSignInReturn();
+      accountProfile = null; profileLoaded = false; accountGroups = {};
+      sessionStateReset();
+      setTimeout(() => render(), 0);
+    });
+    await render();
+  } catch (error) { paint(accountErrorScreen(error)); }
+}
+
+function cleanSignInReturn() {
+  if (!currentUser) return;
+  const url = new URL(location.href);
+  if (url.searchParams.get('signed-in') !== '1') return;
+  url.searchParams.delete('signed-in');
+  history.replaceState(history.state, '', url.href);
+}
+function sessionStateReset() {
+  session.watcher?.stop(); session.watcher = null; session.token = null; session.data = null; session.inflight = null;
+}
+boot();
 
 // Shadow buttons submit explicitly; preserve Enter-to-submit from text fields too.
 document.addEventListener('keydown', (event) => {
@@ -1337,3 +1379,148 @@ document.addEventListener('keydown', (event) => {
   event.preventDefault();
   if (!submit.disabled) input.form.requestSubmit();
 });
+
+// Account screens share the receipt layout; authorization is enforced again in SQL.
+function canEditExpense(data, me, expense) {
+  return data.trip.is_owner || expense.created_by === me.id;
+}
+function canRecordPayment(data, me, payment) {
+  return data.trip.is_owner || payment.from === me.id || payment.to === me.id;
+}
+function accountErrorScreen(error) {
+  return {
+    html: `${bar({ back: '#/' })}${rule()}<section class="block">
+      <h1 class="h1">Could not open this page</h1>
+      <p class="hint">${esc(error instanceof ApiError ? messageFor(error) : error?.message || 'Please try again.')}</p>
+      <button class="plate" type="button" data-retry>Try again</button>
+      <a class="text-btn" href="#/profile">My account</a>
+    </section>`,
+    bind(root) { $('[data-retry]', root).addEventListener('click', () => currentUser ? render() : boot()); },
+  };
+}
+function signInScreen() {
+  return {
+    html: `${bar()}${rule()}<section class="block intro">
+      <h1 class="display">Your groups.<br>Everywhere.</h1>
+      <p class="lede">Sign in with Google or email to access your groups on any device.</p>
+    </section>${rule()}<section class="block form">
+      <button class="plate" type="button" data-clerk-signin>Sign in / Create account</button>
+      <p class="hint">Secure sign-in with Clerk.</p>
+      <p class="form-error" role="alert" hidden></p>
+    </section>${stub('Koto Holo')}`,
+    bind(root) {
+      $('[data-clerk-signin]', root).addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try { await auth.openSignIn(); }
+        catch (error) { const out = $('.form-error', root); out.textContent = error.message; out.hidden = false; }
+        finally { button.disabled = false; }
+      });
+    },
+  };
+}
+function profileScreen() {
+  const profile = accountProfile || { name: currentUser?.user_metadata?.full_name?.slice(0,24) || '', upi: '' };
+  const qrSource = paymentQrSource(profile.upi_qr);
+  const complete = Boolean(profile.upi && qrSource);
+  return {
+    html: `${bar({ back: '#/' })}${rule()}<section class="block">
+      <h1 class="h1">${complete ? 'My profile' : 'Finish creating your account'}</h1>
+      <p class="hint">${esc(currentUser?.email || '')}</p>
+      <form class="form" data-profile-form novalidate>
+        <label class="field"><span class="field-label">Your name</span><input class="field-input" name="name" maxlength="24" autocomplete="name" value="${esc(profile.name)}" required></label>
+        <label class="field"><span class="field-label">UPI ID</span><input class="field-input" name="upi" autocomplete="off" autocapitalize="none" spellcheck="false" value="${esc(profile.upi || '')}" placeholder="name@upi" required></label>
+        <label class="field"><span class="field-label">${complete ? 'Replace UPI QR' : 'Upload UPI QR'}</span><input class="field-input" type="file" name="qr" accept="image/png,image/jpeg,image/webp" ${complete ? '' : 'required'}></label>
+        <p class="hint">Upload the payment QR from your UPI app for this same ID. You can update both later.</p>
+        <p class="hint">Your UPI ID updates across your groups. Your profile name is used when you join new groups; existing group names stay as they are.</p>
+        <p class="form-error" role="alert" hidden></p>
+        <button class="plate" type="submit">${complete ? 'Save profile' : 'Complete setup'}</button>
+      </form>
+      ${qrSource ? `<section class="profile-qr"><h2 class="h2">Your payment QR</h2><img class="qr" src="${qrSource}" alt="Your uploaded UPI payment QR"><a class="outline" href="${qrSource}" download="koto-holo-upi-qr.png">Download QR</a></section>` : ''}
+      <p class="form-error" data-signout-error role="alert" hidden></p>
+      <button class="text-btn" type="button" data-signout>Sign out</button>
+    </section>`,
+    bind(root) {
+      const form = $('[data-profile-form]', root);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const err = $('.form-error', form);
+        const name = form.elements.name.value.trim();
+        const upi = cleanUpi(form.elements.upi.value);
+        if (!name || !upi.ok || !upi.value) { err.textContent = !name ? 'Enter your name.' : 'Enter a valid UPI ID, like name@okaxis.'; err.hidden = false; return; }
+        await busy(form, async () => {
+          try {
+            const file = form.elements.qr.files[0];
+            if (!file && (!complete || upi.value !== profile.upi)) {
+              throw new Error('Upload the payment QR for this UPI ID.');
+            }
+            const qr = file ? await readPaymentQr(file, upi.value) : null;
+            accountProfile = await api.saveProfile(name, upi.value, qr);
+            profileLoaded = true;
+            sessionStateReset();
+            toast('Profile saved.');
+            if (!complete && location.hash !== '#/profile') render();
+            else { paint(profileScreen()); }
+          } catch (error) { err.textContent = error instanceof ApiError ? messageFor(error) : error.message; err.hidden = false; }
+        });
+      });
+      $('[data-signout]', root).addEventListener('click', async (event) => {
+        event.currentTarget.disabled = true;
+        const { error } = await auth.signOut();
+        if (error) {
+          const out = $('[data-signout-error]', root); out.textContent = error.message; out.hidden = false;
+          $('[data-signout]', root).disabled = false;
+        }
+      });
+
+    },
+  };
+}
+function accountJoinScreen(token, data) {
+  return {
+    html: `${bar({ back: '#/' })}${rule()}<section class="block">
+      <h1 class="display">${esc(data.trip.name)}</h1><p class="hint">${plural(data.people,'member')}. Join with your signed-in account to see the expenses.</p>
+      <form class="form" data-join-account novalidate>
+        <label class="field"><span class="field-label">Your name in this group</span><input class="field-input" name="name" maxlength="24" value="${esc(accountProfile.name)}" required></label>
+        <p class="hint">Already listed in an older group? Ask the group owner to link your existing membership before joining.</p>
+        <p class="form-error" role="alert" hidden></p>
+        <button class="plate" type="submit">Join group</button>
+      </form></section>`,
+    bind(root) {
+      const form = $('[data-join-account]', root);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await busy(form, async () => {
+          try {
+            await api.join(token,form.elements.name.value.trim(),accountProfile.upi);
+            sessionStateReset(); render();
+          } catch (error) { const out = $('.form-error',form); out.textContent=messageFor(error); out.hidden=false; }
+        });
+      });
+    },
+  };
+}
+function expenseDetailScreen(token, data, expense) {
+  const byId = new Map(data.members.map((m) => [m.id,m]));
+  return { html: `${bar({ back: tripHash(token) })}${rule()}<section class="block">
+    <h1 class="h1">${esc(expense.title)}</h1><p class="display">${rupees(expense.amount_paise)}</p>
+    <p class="hint">Paid by ${esc(byId.get(expense.paid_by)?.name)}</p>
+    <ul class="lines">${[...expenseShares(expense,data.members)].map(([id,share]) => `<li class="line"><span>${esc(byId.get(id)?.name)}</span><span class="leader"></span><span>${rupees(share)}</span></li>`).join('')}</ul>
+    <p class="hint">Only the person who added this expense or the group owner can edit it.</p></section>` };
+}
+function linkMemberSheet(token, member) {
+  openSheet(`${sheetHead('Link existing member')}<form class="form" data-link-account>
+    <p class="hint">Ask the site administrator for this person's Clerk account ID. This gives them access to the existing member's expenses and balances. They must have signed in and saved their profile first.</p>
+    <label class="field"><span class="field-label">Account ID</span><input class="field-input" name="account" autocomplete="off" placeholder="user_..." required></label>
+    <p class="form-error" role="alert" hidden></p><button class="plate" type="submit">Link account</button></form>`, root => {
+      bindClose(root);
+      const form = $('[data-link-account]',root);
+      form.addEventListener('submit',async event => {
+        event.preventDefault();
+        await busy(form,async () => {
+          try { await afterWrite(await api.linkMember(token,member,form.elements.account.value.trim())); closeSheet(); render(); }
+          catch(error) { const out=$('.form-error',form);out.textContent=messageFor(error);out.hidden=false; }
+        });
+      });
+    });
+}

@@ -1,0 +1,52 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Admin · Koto Holo</title>
+  <link rel="icon" href="/assets/icon.svg">
+  <link rel="stylesheet" href="/assets/css/hisaab.css">
+  <link rel="stylesheet" href="/assets/css/admin.css">
+  <script type="module" src="/assets/js/admin.js"></script>
+</head>
+<body>
+  <main class="admin-panel">
+    <header class="admin-header">
+      <a href="/">Koto Holo</a>
+      <button class="text-btn" type="button" id="admin-signout" hidden>Sign out</button>
+    </header>
+    <h1>Site activity</h1>
+    <p id="admin-status" role="status">Checking sign-in…</p>
+    <button class="plate" type="button" id="admin-signin" hidden>Sign in with Clerk</button>
+    <section id="admin-report" hidden aria-label="Site activity report">
+      <dl class="admin-stats">
+        <div><dt>Known users</dt><dd data-stat="total"></dd></div>
+        <div><dt>Active today</dt><dd data-stat="active_today"></dd></div>
+        <div><dt>Active in 30 days</dt><dd data-stat="active_30_days"></dd></div>
+      </dl>
+      <p class="admin-note">Activity counts one signed-in day per user. Dates are in UTC.</p>
+      <section class="admin-section">
+        <h2>Top users</h2>
+        <p class="admin-note">Ranked by active days over the last 30 days.</p>
+        <table>
+          <thead><tr><th scope="col">User</th><th scope="col">Active days</th><th scope="col">Last active</th></tr></thead>
+          <tbody id="admin-top"></tbody>
+        </table>
+      </section>
+      <section class="admin-section">
+        <h2>Users</h2>
+        <table>
+          <thead><tr><th scope="col">User</th><th scope="col">Active days</th><th scope="col">Last active</th></tr></thead>
+          <tbody id="admin-users"></tbody>
+        </table>
+        <nav class="admin-pages" aria-label="User pages">
+          <button class="text-btn" type="button" id="admin-prev">Previous</button>
+          <span id="admin-range"></span>
+          <button class="text-btn" type="button" id="admin-next">Next</button>
+        </nav>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
