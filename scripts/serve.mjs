@@ -21,10 +21,10 @@ const server = createServer(async (request, response) => {
     return;
   }
   const path = request.url.split('?')[0];
-  const file = path === '/' ? '/index.html' : path;
+  const file = path === '/' ? '/index.html' : ['/admin', '/admin/'].includes(path) ? '/admin/index.html' : path;
   const type = types.get(file.split('.').at(-1));
   const isAsset = /^\/assets\/(?:[\w-]+\/)*[\w-]+\.[\w]+$/.test(file);
-  if (!type || (!isAsset && file !== '/index.html' && file !== '/config.js')) {
+  if (!type || (!isAsset && file !== '/index.html' && file !== '/config.js' && file !== '/admin/index.html')) {
     response.writeHead(404).end();
     return;
   }

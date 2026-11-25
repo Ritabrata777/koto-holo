@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   splitEqually,
+  expenseShares,
   balances,
   settle,
   settleTrip,
@@ -12,6 +13,28 @@ import {
   upiLink,
   cleanUpi,
 } from '../assets/js/settle.js';
+
+test('exact shares persist their amounts and partial payments leave the right remainder', () => {
+  const members = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const expense = { amount_paise: 10000, paid_by: 'a', split: ['a', 'b', 'c'], shares: { a: 1000, b: 6000, c: 3000 } };
+  assert.deepEqual([...expenseShares(expense, members).values()], [1000, 6000, 3000]);
+  const payments = [{ from: 'b', to: 'a', amount_paise: 2000 }];
+  assert.deepEqual(balances(members, [expense], payments).map((r) => r.net), [7000, -4000, -3000]);
+  assert.deepEqual(settleTrip({ members, expenses: [expense], payments }).transfers,
+    [{ from: 'b', to: 'a', amount: 4000 }, { from: 'c', to: 'a', amount: 3000 }]);
+  assert.deepEqual(balances(members, [expense], []).map((r) => r.net), [9000, -6000, -3000]);
+});
+
+test('exact shares reject missing, extra, fractional, negative and mismatched values', () => {
+  const members = [{ id: 'a' }, { id: 'b' }];
+  const expense = { amount_paise: 100, split: ['a', 'b'] };
+  for (const shares of [{ a: 100 }, { a: 50, b: 50, c: 0 }, { a: -1, b: 101 },
+    { a: 0.5, b: 99.5 }, { a: null, b: 100 }, { a: 20, b: 20 }, { a: '50', b: 50 }]) {
+    assert.throws(() => expenseShares({ ...expense, shares }, members), RangeError);
+  }
+  assert.deepEqual([...expenseShares({ ...expense, shares: { a: 0, b: 100 } }, members).values()], [0, 100]);
+  assert.deepEqual([...expenseShares({ ...expense, shares: null }, members).values()], [50, 50]);
+});
 
 // Small seeded PRNG so every failure is reproducible.
 function rng(seed) {

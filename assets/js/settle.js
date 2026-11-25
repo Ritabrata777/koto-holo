@@ -33,6 +33,16 @@ export function orderedSplit(split, members) {
 
 /** Each member's share of one expense, in paise. */
 export function expenseShares(expense, members) {
+  if (expense.shares != null) {
+    const entries = Object.entries(expense.shares);
+    const ids = new Set(expense.split);
+    if (!entries.length || entries.length !== ids.size || entries.some(([id, amount]) =>
+      !ids.has(id) || !members.some((m) => m.id === id) || !Number.isSafeInteger(amount) || amount < 0
+    ) || entries.reduce((sum, [, amount]) => sum + amount, 0) !== expense.amount_paise) {
+      throw new RangeError('Shares must match the selected members and add up to the expense');
+    }
+    return new Map(entries);
+  }
   return splitEqually(expense.amount_paise, orderedSplit(expense.split, members));
 }
 
